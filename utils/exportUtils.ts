@@ -3,6 +3,31 @@ import { Photo, FrameConfig } from '../types';
 import { getExifPartsLine1, getExifPartsLine2 } from './exifUtils';
 
 /**
+ * 모바일 및 APK 환경에서 작동하도록 사용자가 요청한 다운로드 방식
+ */
+const downloadWithRequestedMethod = (blob: Blob, name: string) => {
+  const srcUrl = URL.createObjectURL(blob);
+  
+  fetch(srcUrl, { method: 'GET' })
+    .then((res) => res.blob())
+    .then((blob) => {
+      const url = window.URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = name;
+      document.body.appendChild(a);
+      a.click();
+      setTimeout(() => {
+        window.URL.revokeObjectURL(url);
+      }, 1000);
+      a.remove();
+    })
+    .catch((err) => {
+      console.error('err', err);
+    });
+};
+
+/**
  * 메타데이터 항목 단위로 끊어지지 않게 줄바꿈하여 그리는 함수
  */
 const drawSmartWrappedText = (
@@ -152,30 +177,9 @@ export const exportToJpg = async (photo: Photo, config: FrameConfig) => {
         if (!blob) return reject("Blob creation failed");
         
         const fileName = `MyFrame_${photo.file.name.replace(/\.[^/.]+$/, "")}.jpg`;
-        const file = new File([blob], fileName, { type: 'image/jpeg' });
 
-        // APK/모바일 환경 지원을 위해 Web Share API 우선 시도
-        if (navigator.share && navigator.canShare && navigator.canShare({ files: [file] })) {
-          try {
-            await navigator.share({
-              files: [file],
-              title: 'My Frame Export',
-            });
-            return resolve();
-          } catch (e) {
-            console.log("Share cancelled or failed, falling back to download link", e);
-          }
-        }
-
-        // 폴백: 일반적인 다운로드 방식 (웹 브라우저용)
-        const url = URL.createObjectURL(blob);
-        const link = document.createElement('a');
-        link.download = fileName;
-        link.href = url;
-        document.body.appendChild(link);
-        link.click();
-        document.body.removeChild(link);
-        setTimeout(() => URL.revokeObjectURL(url), 100);
+        // 사용자가 요청한 모바일 전용 다운로드 로직 적용
+        downloadWithRequestedMethod(blob, fileName);
         resolve();
       }, 'image/jpeg', 0.95);
     };
