@@ -60,6 +60,7 @@ const App: React.FC = () => {
       }
     } catch (error) {
       console.error("Export failed:", error);
+      alert("Export failed: " + (error instanceof Error ? error.message : String(error)));
     } finally {
       setIsExporting(false);
     }
@@ -96,7 +97,9 @@ const App: React.FC = () => {
                 onClick={() => setShowExportMenu(!showExportMenu)}
                 className="bg-primary text-white text-sm font-bold px-4 py-2 sm:px-6 sm:py-2.5 rounded-xl shadow-lg shadow-primary/20 hover:scale-105 active:scale-95 transition-all disabled:opacity-50 flex items-center gap-2"
               >
-                <span className="material-symbols-outlined text-lg">{isExporting ? 'sync' : 'ios_share'}</span>
+                <span className={`material-symbols-outlined text-lg ${isExporting ? 'animate-spin' : ''}`}>
+                  {isExporting ? 'sync' : 'ios_share'}
+                </span>
                 <span>{isExporting ? 'Exporting...' : 'Export'}</span>
               </button>
 

@@ -3,28 +3,51 @@ import { Photo, FrameConfig } from '../types';
 import { getExifPartsLine1, getExifPartsLine2 } from './exifUtils';
 
 /**
- * 모바일 및 APK 환경에서 작동하도록 사용자가 요청한 다운로드 방식
+ * APK/모바일 환경에서 blob URL이 차단될 수 있으므로 Data URL(Base64)을 이용해 다운로드를 시도합니다.
  */
-const downloadWithRequestedMethod = (blob: Blob, name: string) => {
-  const srcUrl = URL.createObjectURL(blob);
+const downloadWithDataUrl = (blob: Blob, fileName: string) => {
+  const reader = new FileReader();
+  reader.onloadend = () => {
+    const dataUrl = reader.result as string;
+    const a = document.createElement('a');
+    a.href = dataUrl;
+    a.download = fileName;
+    document.body.appendChild(a);
+    a.click();
+    setTimeout(() => {
+      document.body.removeChild(a);
+    }, 1000);
+  };
+  reader.onerror = (err) => console.error("FileReader error:", err);
+  reader.readAsDataURL(blob);
+};
+
+/**
+ * APK/모바일 환경 대응: Web Share API를 우선 사용합니다.
+ * 안드로이드 WebView에서는 navigator.share가 시스템 공유창을 띄워 저장을 가능하게 합니다.
+ */
+const shareOrDownload = async (blob: Blob, fileName: string) => {
+  const file = new File([blob], fileName, { 
+    type: 'image/jpeg',
+    lastModified: Date.now() 
+  });
   
-  fetch(srcUrl, { method: 'GET' })
-    .then((res) => res.blob())
-    .then((blob) => {
-      const url = window.URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = name;
-      document.body.appendChild(a);
-      a.click();
-      setTimeout(() => {
-        window.URL.revokeObjectURL(url);
-      }, 1000);
-      a.remove();
-    })
-    .catch((err) => {
-      console.error('err', err);
-    });
+  // 1. Web Share API 시도 (안드로이드 APK에서 가장 권장되는 방식)
+  if (navigator.share && navigator.canShare && navigator.canShare({ files: [file] })) {
+    try {
+      await navigator.share({
+        files: [file],
+        title: 'Exported Photo',
+        text: 'Save your framed photo',
+      });
+      return; 
+    } catch (e) {
+      console.warn("Share API failed or cancelled, falling back to direct download", e);
+    }
+  }
+
+  // 2. 폴백: Data URL 기반 다운로드
+  downloadWithDataUrl(blob, fileName);
 };
 
 /**
@@ -71,119 +94,126 @@ export const exportToJpg = async (photo: Photo, config: FrameConfig) => {
     const img = new Image();
     img.crossOrigin = "anonymous";
     img.onload = async () => {
-      const canvas = document.createElement('canvas');
-      const ctx = canvas.getContext('2d');
-      if (!ctx) return reject("Canvas context not available");
+      try {
+        const canvas = document.createElement('canvas');
+        const ctx = canvas.getContext('2d');
+        if (!ctx) return reject("Canvas context not available");
 
-      const scaleFactor = img.width / 1000;
-      const thickness = config.thickness * scaleFactor;
-      
-      const baseFontSize = img.width / 45;
-      const line1FontSize = baseFontSize;
-      const line2FontSize = baseFontSize * 0.75;
-      const line1Spacing = line1FontSize * 1.25;
-      const line2Spacing = line2FontSize * 1.25;
-
-      const parts1 = getExifPartsLine1(photo.exif, config);
-      const parts2 = getExifPartsLine2(photo.exif, config);
-      
-      const textTopMargin = thickness * 0.4; 
-      const textBottomPadding = thickness * 0.4; 
-      
-      canvas.width = img.width + (thickness * 2);
-      
-      const maxWidth = img.width;
-      ctx.font = `bold ${line1FontSize}px Inter, sans-serif`;
-      
-      let l1Lines: string[][] = [];
-      let currentL1: string[] = [];
-      parts1.forEach(p => {
-        if (ctx.measureText([...currentL1, p].join(' · ')).width > maxWidth && currentL1.length > 0) {
-          l1Lines.push(currentL1);
-          currentL1 = [p];
-        } else { currentL1.push(p); }
-      });
-      l1Lines.push(currentL1);
-      const l1Count = parts1.length > 0 ? Math.min(l1Lines.length, 2) : 0;
-
-      ctx.font = `medium ${line2FontSize}px Inter, sans-serif`;
-      let l2Lines: string[][] = [];
-      let currentL2: string[] = [];
-      parts2.forEach(p => {
-        if (ctx.measureText([...currentL2, p].join(' · ')).width > maxWidth && currentL2.length > 0) {
-          l2Lines.push(currentL2);
-          currentL2 = [p];
-        } else { currentL2.push(p); }
-      });
-      l2Lines.push(currentL2);
-      const l2Count = parts2.length > 0 ? Math.min(l2Lines.length, 2) : 0;
-
-      const totalTextHeight = (l1Count * line1Spacing) + (l2Count * line2Spacing);
-      
-      canvas.height = img.height + thickness + textTopMargin + totalTextHeight + textBottomPadding;
-
-      ctx.fillStyle = config.color;
-      ctx.fillRect(0, 0, canvas.width, canvas.height);
-
-      const imageX = thickness;
-      const imageY = thickness;
-      
-      if (config.roundCorners) {
-        const radius = 24 * scaleFactor;
-        ctx.save();
-        ctx.beginPath();
-        ctx.moveTo(imageX + radius, imageY);
-        ctx.lineTo(imageX + img.width - radius, imageY);
-        ctx.quadraticCurveTo(imageX + img.width, imageY, imageX + img.width, imageY + radius);
-        ctx.lineTo(imageX + img.width, imageY + img.height - radius);
-        ctx.quadraticCurveTo(imageX + img.width, imageY + img.height, imageX + img.width - radius, imageY + img.height);
-        ctx.lineTo(imageX + radius, imageY + img.height);
-        ctx.quadraticCurveTo(imageX, imageY + img.height, imageX, imageY + img.height - radius);
-        ctx.lineTo(imageX, imageY + radius);
-        ctx.quadraticCurveTo(imageX, imageY, imageX + radius, imageY);
-        ctx.closePath();
-        ctx.clip();
-        ctx.drawImage(img, imageX, imageY);
-        ctx.restore();
-      } else {
-        ctx.drawImage(img, imageX, imageY);
-      }
-
-      ctx.fillStyle = config.textColor;
-      ctx.textBaseline = 'top';
-      const align = config.alignment;
-      
-      let textX = thickness + (img.width / 2);
-      if (align === 'left') textX = thickness + (thickness * 0.1);
-      if (align === 'right') textX = canvas.width - thickness - (thickness * 0.1);
-      ctx.textAlign = align as CanvasTextAlign;
-
-      let currentY = img.height + thickness + textTopMargin;
-
-      if (parts1.length > 0) {
-        ctx.font = `bold ${line1FontSize}px Inter, sans-serif`;
-        ctx.globalAlpha = 0.9;
-        const linesUsed = drawSmartWrappedText(ctx, parts1, textX, currentY, maxWidth, line1Spacing, align);
-        currentY += linesUsed * line1Spacing;
-      }
-
-      if (parts2.length > 0) {
-        ctx.font = `medium ${line2FontSize}px Inter, sans-serif`;
-        ctx.globalAlpha = 0.6;
-        drawSmartWrappedText(ctx, parts2, textX, currentY, maxWidth, line2Spacing, align);
-      }
-
-      canvas.toBlob(async (blob) => {
-        if (!blob) return reject("Blob creation failed");
+        const scaleFactor = img.width / 1000;
+        const thickness = config.thickness * scaleFactor;
         
-        const fileName = `MyFrame_${photo.file.name.replace(/\.[^/.]+$/, "")}.jpg`;
+        const baseFontSize = img.width / 45;
+        const line1FontSize = baseFontSize;
+        const line2FontSize = baseFontSize * 0.75;
+        const line1Spacing = line1FontSize * 1.25;
+        const line2Spacing = line2FontSize * 1.25;
 
-        // 사용자가 요청한 모바일 전용 다운로드 로직 적용
-        downloadWithRequestedMethod(blob, fileName);
-        resolve();
-      }, 'image/jpeg', 0.95);
+        const parts1 = getExifPartsLine1(photo.exif, config);
+        const parts2 = getExifPartsLine2(photo.exif, config);
+        
+        const textTopMargin = thickness * 0.4; 
+        const textBottomPadding = thickness * 0.4; 
+        
+        canvas.width = img.width + (thickness * 2);
+        
+        const maxWidth = img.width;
+        ctx.font = `bold ${line1FontSize}px Inter, sans-serif`;
+        
+        let l1Lines: string[][] = [];
+        let currentL1: string[] = [];
+        parts1.forEach(p => {
+          if (ctx.measureText([...currentL1, p].join(' · ')).width > maxWidth && currentL1.length > 0) {
+            l1Lines.push(currentL1);
+            currentL1 = [p];
+          } else { currentL1.push(p); }
+        });
+        l1Lines.push(currentL1);
+        const l1Count = parts1.length > 0 ? Math.min(l1Lines.length, 2) : 0;
+
+        ctx.font = `medium ${line2FontSize}px Inter, sans-serif`;
+        let l2Lines: string[][] = [];
+        let currentL2: string[] = [];
+        parts2.forEach(p => {
+          if (ctx.measureText([...currentL2, p].join(' · ')).width > maxWidth && currentL2.length > 0) {
+            l2Lines.push(currentL2);
+            currentL2 = [p];
+          } else { currentL2.push(p); }
+        });
+        l2Lines.push(currentL2);
+        const l2Count = parts2.length > 0 ? Math.min(l2Lines.length, 2) : 0;
+
+        const totalTextHeight = (l1Count * line1Spacing) + (l2Count * line2Spacing);
+        
+        canvas.height = img.height + thickness + textTopMargin + totalTextHeight + textBottomPadding;
+
+        ctx.fillStyle = config.color;
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+        const imageX = thickness;
+        const imageY = thickness;
+        
+        if (config.roundCorners) {
+          const radius = 24 * scaleFactor;
+          ctx.save();
+          ctx.beginPath();
+          ctx.moveTo(imageX + radius, imageY);
+          ctx.lineTo(imageX + img.width - radius, imageY);
+          ctx.quadraticCurveTo(imageX + img.width, imageY, imageX + img.width, imageY + radius);
+          ctx.lineTo(imageX + img.width, imageY + img.height - radius);
+          ctx.quadraticCurveTo(imageX + img.width, imageY + img.height, imageX + img.width - radius, imageY + img.height);
+          ctx.lineTo(imageX + radius, imageY + img.height);
+          ctx.quadraticCurveTo(imageX, imageY + img.height, imageX, imageY + img.height - radius);
+          ctx.lineTo(imageX, imageY + radius);
+          ctx.quadraticCurveTo(imageX, imageY, imageX + radius, imageY);
+          ctx.closePath();
+          ctx.clip();
+          ctx.drawImage(img, imageX, imageY);
+          ctx.restore();
+        } else {
+          ctx.drawImage(img, imageX, imageY);
+        }
+
+        ctx.fillStyle = config.textColor;
+        ctx.textBaseline = 'top';
+        const align = config.alignment;
+        
+        let textX = thickness + (img.width / 2);
+        if (align === 'left') textX = thickness + (thickness * 0.1);
+        if (align === 'right') textX = canvas.width - thickness - (thickness * 0.1);
+        ctx.textAlign = align as CanvasTextAlign;
+
+        let currentY = img.height + thickness + textTopMargin;
+
+        if (parts1.length > 0) {
+          ctx.font = `bold ${line1FontSize}px Inter, sans-serif`;
+          ctx.globalAlpha = 0.9;
+          const linesUsed = drawSmartWrappedText(ctx, parts1, textX, currentY, maxWidth, line1Spacing, align);
+          currentY += linesUsed * line1Spacing;
+        }
+
+        if (parts2.length > 0) {
+          ctx.font = `medium ${line2FontSize}px Inter, sans-serif`;
+          ctx.globalAlpha = 0.6;
+          drawSmartWrappedText(ctx, parts2, textX, currentY, maxWidth, line2Spacing, align);
+        }
+
+        canvas.toBlob(async (blob) => {
+          if (!blob) return reject("Blob creation failed");
+          
+          const fileName = `MyFrame_${photo.file.name.replace(/\.[^/.]+$/, "")}.jpg`;
+
+          try {
+            await shareOrDownload(blob, fileName);
+            resolve();
+          } catch (err) {
+            reject(err);
+          }
+        }, 'image/jpeg', 0.95);
+      } catch (e) {
+        reject(e);
+      }
     };
-    img.onerror = () => reject("Image loading failed");
+    img.onerror = () => reject("Image loading failed - Check cross-origin settings");
     img.src = photo.previewUrl;
   });
 };
