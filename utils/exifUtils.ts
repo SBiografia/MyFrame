@@ -23,9 +23,9 @@ const FUJIFILM_EXIF_VALUE_MAP: Record<string, any> = {
     0: "Provia/Standard",
     256: "Studio Portrait",
     272: "Studio Portrait Enhanced Saturation",
-    288: "Astia", // Studio Portrait Smooth Skin Tone
+    288: "Astia", 
     304: "Studio Portrait Increased Sharpness",
-    512: "Velvia", // Fujichrome
+    512: "Velvia", 
     768: "Studio Portrait EX",
     1024: "Velvia",
     1280: "Pro Neg. Standard",
@@ -39,74 +39,73 @@ const FUJIFILM_EXIF_VALUE_MAP: Record<string, any> = {
 };
 
 /**
- * Parses Fujifilm-specific MakerNote IFD.
+ * 사용자가 제공한 Fujifilm MakerNote 파싱 로직
  */
 function parseFujifilmExif(makerNote: any) {
+  const OFFSET = 12;
   if (!makerNote) return undefined;
-  
-  const uint8Array = new Uint8Array(makerNote);
-  const view = new DataView(uint8Array.buffer, uint8Array.byteOffset, uint8Array.byteLength);
-  const result: any = {};
-  const ENTRY_SIZE = 12;
 
-  // Fujifilm MakerNote usually starts with "FUJIFILM" (8 bytes) followed by 4 bytes of offset to the start of the IFD
-  let startOffset = 0;
-  if (uint8Array.length > 12 && 
-      String.fromCharCode(...uint8Array.slice(0, 8)) === "FUJIFILM") {
-    startOffset = view.getUint32(8, true); // Read offset (usually 12)
+  // makerNote가 ArrayBuffer가 아닌 경우 처리 (exif-js는 종종 일반 배열을 반환함)
+  let uint8Array: Uint8Array;
+  if (makerNote instanceof Uint8Array) {
+    uint8Array = makerNote;
+  } else if (makerNote instanceof ArrayBuffer) {
+    uint8Array = new Uint8Array(makerNote);
+  } else if (Array.isArray(makerNote)) {
+    uint8Array = new Uint8Array(makerNote);
+  } else {
+    return undefined;
   }
 
+  const buffer = uint8Array.buffer;
+  const view = new DataView(buffer, uint8Array.byteOffset, uint8Array.byteLength);
+  const result: any = {};
+
   try {
-    const tagCount = view.getUint16(startOffset, true);
-    let offset = startOffset + 2;
+    // Fujifilm MakerNote는 "FUJIFILM" 헤더(8 bytes) + IFD 시작 오프셋(4 bytes)으로 시작하는 경우가 많음
+    let startPos = 0;
+    const header = String.fromCharCode(...uint8Array.slice(0, 8));
+    if (header === "FUJIFILM") {
+      startPos = view.getUint32(8, true); 
+    }
+
+    const tagCount = view.getUint16(startPos, true);
+    let offset = startPos + 2;
 
     for (let i = 0; i < tagCount; i++) {
-      if (offset + ENTRY_SIZE > uint8Array.length) {
-        break;
-      }
+      if (offset + OFFSET > uint8Array.length) break;
 
       const tag = view.getUint16(offset, true);
       const type = view.getUint16(offset + 2, true);
       const count = view.getUint32(offset + 4, true);
-      const valueOffsetOrValue = view.getUint32(offset + 8, true);
-
+      
       if (!(type in FUJIFILM_TYPE_SIZES)) {
-        offset += ENTRY_SIZE;
+        offset += OFFSET;
         continue;
       }
 
+      const valueOffset = view.getUint32(offset + 8, true);
       const key = FUJIFILM_EXIF_TAGS[tag] || `Unknown_0x${tag.toString(16)}`;
-      const size = FUJIFILM_TYPE_SIZES[type];
+      const size = FUJIFILM_TYPE_SIZES[type] || 1;
       const totalBytes = size * count;
 
       let value;
-      // If the value fits in 4 bytes, it is stored directly in the offset field
       if (totalBytes <= 4) {
         switch (type) {
-          case 3: // SHORT
-            value = view.getUint16(offset + 8, true);
+          case 3: value = view.getUint16(offset + 8, true); break;
+          case 4: value = view.getUint32(offset + 8, true); break;
+          case 9: value = view.getInt32(offset + 8, true); break;
+          case 2:
+            value = String.fromCharCode(...uint8Array.slice(offset + 8, offset + 8 + count)).replace(/\0/g, "");
             break;
-          case 4: // LONG
-            value = view.getUint32(offset + 8, true);
-            break;
-          case 9: // SLONG
-            value = view.getInt32(offset + 8, true);
-            break;
-          case 2: // ASCII
-            value = String.fromCharCode(
-              ...uint8Array.slice(offset + 8, offset + 8 + count)
-            ).replace(/\0/g, "");
-            break;
-          default:
-            value = valueOffsetOrValue;
+          default: value = valueOffset;
         }
       } else {
-        // Otherwise it is an offset from the beginning of the MakerNote
-        const start = valueOffsetOrValue;
+        let start = valueOffset;
+        // 오프셋이 헤더 기준이 아닌 전체 파일 기준인 경우가 있을 수 있으나, 
+        // 일반적으로 MakerNote 내 상대 오프셋으로 처리
         if (type === 2) {
-          value = String.fromCharCode(
-            ...uint8Array.slice(start, start + count)
-          ).replace(/\0/g, "");
+          value = String.fromCharCode(...uint8Array.slice(start, start + count)).replace(/\0/g, "");
         } else if (type === 3) {
           value = [];
           for (let j = 0; j < count; j++) value.push(view.getUint16(start + j * 2, true));
@@ -119,25 +118,28 @@ function parseFujifilmExif(makerNote: any) {
       }
 
       result[key] = value;
-      offset += ENTRY_SIZE;
+      offset += OFFSET;
     }
   } catch (e) {
-    console.warn("Fujifilm MakerNote parse failed", e);
+    console.warn("Fujifilm parsing error:", e);
   }
 
   return result;
 }
 
 /**
- * Normalizes Fujifilm tags to human-readable strings.
+ * 사용자가 제공한 Fujifilm 데이터 정규화 로직
  */
 function normalizeFujifilmExif(exifData: any) {
   if (!exifData) return {};
   const normalized: any = {};
+
   for (const tag in exifData) {
     if (!tag.match(/^Exif\.Fujifilm\./)) continue;
+
     const value = exifData[tag];
     if (value === undefined || value === null) continue;
+
     if (FUJIFILM_EXIF_VALUE_MAP[tag]) {
       const mapping = FUJIFILM_EXIF_VALUE_MAP[tag];
       normalized[tag] = typeof mapping === "function" ? mapping(value) : mapping[value] || value;
@@ -145,6 +147,7 @@ function normalizeFujifilmExif(exifData: any) {
       normalized[tag] = value;
     }
   }
+
   return normalized;
 }
 
@@ -163,7 +166,6 @@ export const parseExif = (file: File): Promise<ExifData> => {
           return "1/" + Math.round(1 / shutterSpeed) + "s";
         };
 
-        // Lens information priority: LensInfo -> LensModel -> LensMake -> UndefinedTag_0xA434
         let lens = allTags.LensInfo || allTags.LensModel || allTags.LensMake || allTags.UndefinedTag_0xA434;
         
         if (Array.isArray(lens)) {
@@ -188,10 +190,9 @@ export const parseExif = (file: File): Promise<ExifData> => {
           dateTime: allTags.DateTimeOriginal || allTags.DateTime,
         };
 
-        // Fujifilm-specific film simulation extraction
         if (allTags.Make?.toLowerCase().includes('fujifilm')) {
-          const fujiExifData = parseFujifilmExif(allTags.MakerNote);
-          const normalized = normalizeFujifilmExif(fujiExifData);
+          const fujifilmExifData = parseFujifilmExif(allTags.MakerNote);
+          const normalized = normalizeFujifilmExif(fujifilmExifData);
           data.filmSimulation = normalized["Exif.Fujifilm.FilmMode"];
         }
 

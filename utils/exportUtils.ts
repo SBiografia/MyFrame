@@ -45,7 +45,7 @@ export const exportToJpg = async (photo: Photo, config: FrameConfig) => {
   return new Promise<void>((resolve, reject) => {
     const img = new Image();
     img.crossOrigin = "anonymous";
-    img.onload = () => {
+    img.onload = async () => {
       const canvas = document.createElement('canvas');
       const ctx = canvas.getContext('2d');
       if (!ctx) return reject("Canvas context not available");
@@ -95,7 +95,6 @@ export const exportToJpg = async (photo: Photo, config: FrameConfig) => {
 
       const totalTextHeight = (l1Count * line1Spacing) + (l2Count * line2Spacing);
       
-      // 캔버스 높이 결정
       canvas.height = img.height + thickness + textTopMargin + totalTextHeight + textBottomPadding;
 
       ctx.fillStyle = config.color;
@@ -149,14 +148,34 @@ export const exportToJpg = async (photo: Photo, config: FrameConfig) => {
         drawSmartWrappedText(ctx, parts2, textX, currentY, maxWidth, line2Spacing, align);
       }
 
-      canvas.toBlob((blob) => {
+      canvas.toBlob(async (blob) => {
         if (!blob) return reject("Blob creation failed");
+        
+        const fileName = `MyFrame_${photo.file.name.replace(/\.[^/.]+$/, "")}.jpg`;
+        const file = new File([blob], fileName, { type: 'image/jpeg' });
+
+        // APK/모바일 환경 지원을 위해 Web Share API 우선 시도
+        if (navigator.share && navigator.canShare && navigator.canShare({ files: [file] })) {
+          try {
+            await navigator.share({
+              files: [file],
+              title: 'My Frame Export',
+            });
+            return resolve();
+          } catch (e) {
+            console.log("Share cancelled or failed, falling back to download link", e);
+          }
+        }
+
+        // 폴백: 일반적인 다운로드 방식 (웹 브라우저용)
         const url = URL.createObjectURL(blob);
         const link = document.createElement('a');
-        link.download = `MyFrame_${photo.file.name.replace(/\.[^/.]+$/, "")}.jpg`;
+        link.download = fileName;
         link.href = url;
+        document.body.appendChild(link);
         link.click();
-        URL.revokeObjectURL(url);
+        document.body.removeChild(link);
+        setTimeout(() => URL.revokeObjectURL(url), 100);
         resolve();
       }, 'image/jpeg', 0.95);
     };
